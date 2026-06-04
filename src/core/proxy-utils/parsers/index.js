@@ -30,6 +30,7 @@ import {
     isSupportedXrayEchConfigList,
     isSupportedXrayEchForceQuery,
 } from '../ech-utils';
+import { normalizeVmessSecurity } from '../vmess-security';
 
 function surge_port_hopping(raw) {
     const [parts, port_hopping] =
@@ -636,7 +637,9 @@ function URI_VMess() {
                 type: 'vmess',
                 server: partitions[1],
                 port: partitions[2],
-                cipher: getIfNotBlank(partitions[3], 'auto'),
+                cipher: normalizeVmessSecurity(
+                    getIfNotBlank(partitions[3], 'auto'),
+                ),
                 uuid: partitions[4].match(/^"(.*)"$/)[1],
                 tls: params.obfs === 'wss',
                 udp: getIfPresent(params['udp-relay']),
@@ -718,14 +721,7 @@ function URI_VMess() {
                 port,
                 // https://github.com/2dust/v2rayN/wiki/Description-of-VMess-share-link
                 // https://github.com/XTLS/Xray-core/issues/91
-                cipher: [
-                    'auto',
-                    'aes-128-gcm',
-                    'chacha20-poly1305',
-                    'none',
-                ].includes(params.scy)
-                    ? params.scy
-                    : 'auto',
+                cipher: normalizeVmessSecurity(params.scy),
                 uuid: params.id,
                 alterId: parseInt(
                     getIfPresent(params.aid ?? params.alterId, 0),
@@ -855,8 +851,9 @@ function URI_VMess() {
                         const normalizedTransportHost =
                             getIfNotBlank(transportHost);
                         if (proxy.network === 'h2') {
-                            const h2Hosts =
-                                splitURIHostList(normalizedTransportHost);
+                            const h2Hosts = splitURIHostList(
+                                normalizedTransportHost,
+                            );
                             if (h2Hosts) {
                                 opts.host = h2Hosts;
                             }
@@ -1820,14 +1817,15 @@ function URI_VLESS() {
         proxy['tls-fingerprint'] = getIfPresent(params.pcs);
         proxy._h2 = /(TRUE)|1/i.test(params.h2);
 
-        switch (`${params.packetEncoding || ''}`.toLowerCase()) {
+        switch (`${params.packetEncoding || ''}`.trim().toLowerCase()) {
             case 'none':
+                proxy['packet-encoding'] = '';
                 break;
             case 'packet':
-                proxy['packet-addr'] = true;
+                proxy['packet-encoding'] = 'packetaddr';
                 break;
             default:
-                proxy.xudp = true;
+                proxy['packet-encoding'] = 'xudp';
                 break;
         }
 
@@ -2510,6 +2508,9 @@ function Clash_All() {
         }
         if (proxy['benchmark-timeout']) {
             proxy['test-timeout'] = proxy['benchmark-timeout'];
+        }
+        if (proxy.type === 'vmess') {
+            proxy.cipher = normalizeVmessSecurity(proxy.cipher);
         }
 
         return proxy;

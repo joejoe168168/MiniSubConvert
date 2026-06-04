@@ -5,7 +5,9 @@ import { getWireGuardAddressWithCIDR, normalizePluginMuxValue } from './utils';
 import {
     extractPathQueryParam,
     getSafeIntegerPathQueryParam,
+    parseSafeIntegerValue,
 } from '../transport-path';
+import { normalizeVmessSecurity } from '../vmess-security';
 
 const ipVersions = {
     ipv4: 'ipv4_only',
@@ -288,6 +290,24 @@ const normalizePemLines = (value, label) => {
     return [`-----BEGIN ${label}-----`, ...lines, `-----END ${label}-----`];
 };
 
+const singBoxUtlsFingerprints = [
+    'chrome',
+    'firefox',
+    'edge',
+    'safari',
+    '360',
+    'qq',
+    'ios',
+    'android',
+    'random',
+    'randomized',
+];
+
+const getSingBoxUtlsFingerprint = (value) => {
+    const fingerprint = `${value || ''}`.trim().toLowerCase();
+    if (singBoxUtlsFingerprints.includes(fingerprint)) return fingerprint;
+};
+
 const tlsParser = (proxy, parsedProxy) => {
     if (proxy.tls) parsedProxy.tls.enabled = true;
     if (proxy.servername && proxy.servername !== '')
@@ -318,11 +338,17 @@ const tlsParser = (proxy, parsedProxy) => {
         !['hysteria', 'hysteria2', 'tuic'].includes(proxy.type) &&
         proxy['client-fingerprint'] &&
         proxy['client-fingerprint'] !== ''
-    )
-        parsedProxy.tls.utls = {
-            enabled: true,
-            fingerprint: proxy['client-fingerprint'],
-        };
+    ) {
+        const fingerprint = getSingBoxUtlsFingerprint(
+            proxy['client-fingerprint'],
+        );
+        if (fingerprint)
+            parsedProxy.tls.utls = {
+                ...parsedProxy.tls.utls,
+                enabled: true,
+                fingerprint,
+            };
+    }
     if (proxy._ech && isPlainObject(proxy._ech)) {
         parsedProxy.tls.ech = proxy._ech;
     } else if (proxy['ech-opts'] && isPlainObject(proxy['ech-opts'])) {
@@ -530,6 +556,7 @@ const normalizeALPN = (alpn) => {
 
 const shadowTLSOutboundParser = (proxy = {}, pluginOpts) => {
     if (!pluginOpts) throw new Error('shadow-tls plugin options are missing');
+    const fingerprint = getSingBoxUtlsFingerprint(proxy['client-fingerprint']);
 
     const stPart = {
         tag: getShadowTLSTag(proxy),
@@ -543,7 +570,7 @@ const shadowTLSOutboundParser = (proxy = {}, pluginOpts) => {
             server_name: pluginOpts.host,
             utls: {
                 enabled: true,
-                fingerprint: proxy['client-fingerprint'],
+                fingerprint,
             },
         },
     };
@@ -726,6 +753,40 @@ const snellParser = (proxy = {}) => {
     return parsedProxy;
 };
 
+const singBoxPacketEncodings = ['', 'packetaddr', 'xudp'];
+
+const normalizeSingBoxPacketEncoding = (value) => {
+    const packetEncoding = `${value}`.trim().toLowerCase();
+    if (singBoxPacketEncodings.includes(packetEncoding)) {
+        return packetEncoding;
+    }
+    return undefined;
+};
+
+const vmessVlessPacketEncodingParser = (proxy, parsedProxy) => {
+    if (proxy['packet-encoding'] != null) {
+        const packetEncoding = normalizeSingBoxPacketEncoding(
+            proxy['packet-encoding'],
+        );
+        if (packetEncoding != null)
+            parsedProxy.packet_encoding = packetEncoding;
+    } else if (proxy.xudp) {
+        parsedProxy.packet_encoding = 'xudp';
+    } else if (proxy['packet-addr']) {
+        parsedProxy.packet_encoding = 'packetaddr';
+    }
+};
+
+const vmessProtocolOptionsParser = (proxy, parsedProxy) => {
+    vmessVlessPacketEncodingParser(proxy, parsedProxy);
+    if (proxy['global-padding'] != null) {
+        parsedProxy.global_padding = !!proxy['global-padding'];
+    }
+    if (proxy['authenticated-length'] != null) {
+        parsedProxy.authenticated_length = !!proxy['authenticated-length'];
+    }
+};
+
 const vmessParser = (proxy = {}) => {
     const parsedProxy = {
         tag: proxy.name,
@@ -733,24 +794,13 @@ const vmessParser = (proxy = {}) => {
         server: proxy.server,
         server_port: parseInt(`${proxy.port}`, 10),
         uuid: proxy.uuid,
-        security: proxy.cipher,
+        security: normalizeVmessSecurity(proxy.cipher),
         alter_id: parseInt(`${proxy.alterId}`, 10),
         tls: { enabled: false, server_name: proxy.server, insecure: false },
     };
-    if (
-        [
-            'auto',
-            'none',
-            'zero',
-            'aes-128-gcm',
-            'chacha20-poly1305',
-            'aes-128-ctr',
-        ].indexOf(parsedProxy.security) === -1
-    )
-        parsedProxy.security = 'auto';
     if (parsedProxy.server_port < 0 || parsedProxy.server_port > 65535)
         throw 'invalid port';
-    if (proxy.xudp) parsedProxy.packet_encoding = 'xudp';
+    vmessProtocolOptionsParser(proxy, parsedProxy);
     if (proxy['fast-open']) parsedProxy.udp_fragment = true;
     if (proxy.network === 'ws') wsParser(proxy, parsedProxy);
     if (proxy.network === 'h2') h2Parser(proxy, parsedProxy);
@@ -777,7 +827,7 @@ const vlessParser = (proxy = {}) => {
     };
     if (parsedProxy.server_port < 0 || parsedProxy.server_port > 65535)
         throw 'invalid port';
-    if (proxy.xudp) parsedProxy.packet_encoding = 'xudp';
+    vmessVlessPacketEncodingParser(proxy, parsedProxy);
     if (proxy['fast-open']) parsedProxy.udp_fragment = true;
     // if (['xtls-rprx-vision', ''].includes(proxy.flow)) parsedProxy.flow = proxy.flow;
     if (proxy.flow != null) parsedProxy.flow = proxy.flow;
@@ -927,6 +977,7 @@ const hysteriaParser = (proxy = {}) => {
     domainResolverParser(proxy, parsedProxy);
     return parsedProxy;
 };
+
 const hysteria2Parser = (proxy = {}) => {
     const parsedProxy = {
         tag: proxy.name,
@@ -950,7 +1001,50 @@ const hysteria2Parser = (proxy = {}) => {
         });
     if (proxy.up) parsedProxy.up_mbps = parseInt(`${proxy.up}`, 10);
     if (proxy.down) parsedProxy.down_mbps = parseInt(`${proxy.down}`, 10);
-    if (proxy.obfs === 'salamander') parsedProxy.obfs.type = 'salamander';
+    if (['salamander', 'gecko'].includes(proxy.obfs))
+        parsedProxy.obfs.type = proxy.obfs;
+    if (proxy.obfs === 'gecko') {
+        const minRaw = proxy['obfs-min-packet-size'];
+        const maxRaw = proxy['obfs-max-packet-size'];
+        const hasMin =
+            minRaw !== undefined && minRaw !== null && `${minRaw}` !== '';
+        const hasMax =
+            maxRaw !== undefined && maxRaw !== null && `${maxRaw}` !== '';
+        if (hasMin || hasMax) {
+            const minPacketSize = hasMin
+                ? parseSafeIntegerValue(`${minRaw}`.trim())
+                : undefined;
+            const rawMaxPacketSize = hasMax
+                ? parseSafeIntegerValue(`${maxRaw}`.trim())
+                : undefined;
+            const maxPacketSize =
+                rawMaxPacketSize != null
+                    ? Math.min(rawMaxPacketSize, 2048)
+                    : rawMaxPacketSize;
+            const effectiveMinPacketSize = minPacketSize ?? 512;
+            const effectiveMaxPacketSize = maxPacketSize ?? 1200;
+
+            if (hasMax && rawMaxPacketSize != null && rawMaxPacketSize > 2048) {
+                $.warn(
+                    `Gecko obfs max packet size for proxy ${proxy.name} exceeds 2048, clamped to 2048: ${maxRaw}`,
+                );
+            }
+
+            if (
+                (hasMin && (minPacketSize == null || minPacketSize <= 0)) ||
+                (hasMax &&
+                    (rawMaxPacketSize == null || rawMaxPacketSize <= 0)) ||
+                effectiveMaxPacketSize < effectiveMinPacketSize
+            ) {
+                $.error(
+                    `Invalid obfs packet size for proxy ${proxy.name}: min=${minRaw} max=${maxRaw}`,
+                );
+            } else {
+                if (hasMin) parsedProxy.obfs.min_packet_size = minPacketSize;
+                if (hasMax) parsedProxy.obfs.max_packet_size = maxPacketSize;
+            }
+        }
+    }
     if (proxy['obfs-password'])
         parsedProxy.obfs.password = proxy['obfs-password'];
     if (!parsedProxy.obfs.type) delete parsedProxy.obfs;
@@ -1064,6 +1158,16 @@ const tailscaleParser = (proxy = {}) => {
         detourParser(proxy, parsedProxy);
         ipVersionParser(proxy, parsedProxy);
         domainResolverParser(proxy, parsedProxy);
+    }
+    if (isPlainObject(proxy['ssh-server'])) {
+        parsedProxy.ssh_server = {
+            enabled: proxy['ssh-server'].enabled !== false,
+            disable_pty: proxy['ssh-server']['disable-pty'],
+            disable_sftp: proxy['ssh-server']['disable-sftp'],
+            disable_forwarding: proxy['ssh-server']['disable-forwarding'],
+        };
+    } else if (proxy['ssh-server']) {
+        parsedProxy.ssh_server = !!proxy['ssh-server'];
     }
     return parsedProxy;
 };

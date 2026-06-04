@@ -18,6 +18,7 @@ import {
     buildXrayEchConfigListFromMihomo,
     buildXrayEchFieldsFromMihomo,
 } from '../ech-utils';
+import { normalizeVmessSecurity } from '../vmess-security';
 
 function toStringHeaderMap(headers, { excludeHost = false } = {}) {
     if (!isPlainObject(headers)) {
@@ -732,10 +733,28 @@ function vless(proxy) {
     }
 
     let packetEncoding = '';
-    if (proxy['packet-addr']) {
-        packetEncoding = '&packetEncoding=packet';
-    } else if (proxy.udp === true && !proxy.xudp) {
-        packetEncoding = '&packetEncoding=none';
+    let canonicalPacketEncoding;
+    if (proxy['packet-encoding'] != null) {
+        canonicalPacketEncoding = `${proxy['packet-encoding']}`
+            .trim()
+            .toLowerCase();
+    } else if (proxy.xudp) {
+        canonicalPacketEncoding = 'xudp';
+    } else if (proxy['packet-addr']) {
+        canonicalPacketEncoding = 'packetaddr';
+    } else if (proxy.udp === true) {
+        canonicalPacketEncoding = '';
+    }
+    switch (canonicalPacketEncoding) {
+        case '':
+            packetEncoding = '&packetEncoding=none';
+            break;
+        case 'packetaddr':
+            packetEncoding = '&packetEncoding=packet';
+            break;
+        case 'xudp':
+            packetEncoding = '&packetEncoding=xudp';
+            break;
     }
 
     return `vless://${proxy.uuid}@${proxy.server}:${
@@ -997,7 +1016,7 @@ export default function URI_Producer() {
                     port: `${proxy.port}`,
                     id: proxy.uuid,
                     aid: `${proxy.alterId || 0}`,
-                    scy: proxy.cipher,
+                    scy: normalizeVmessSecurity(proxy.cipher),
                     net,
                     type,
                     tls: proxy.tls ? 'tls' : '',
