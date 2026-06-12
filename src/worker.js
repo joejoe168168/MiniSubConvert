@@ -6,11 +6,17 @@ export default {
         const pathname = new URL(request.url).pathname;
         const secret = env.SECRET || "secret";
 
+        const isSubPath = pathname === `/${secret}/sub`;
         if (
             !(method === "POST" && pathname === `/${secret}/api/proxy/parse`) &&
-            !(method === "GET" && pathname === `/${secret}/sub`)
+            !(method === "GET" && isSubPath) &&
+            !(method === "HEAD" && isSubPath)
         ) {
             return new Response(null, { status: 403 });
+        }
+
+        if (method === "HEAD") {
+            return new Response(null, { status: 200 });
         }
 
         try {
